@@ -1,0 +1,11 @@
+# ignore environment files
+.env
+
+# ignore node_modules and build artifacts
+frontend/node_modules/
+frontend/build/
+app/__pycache__/
+*.pyc
+
+# ignore venv
+.venv/

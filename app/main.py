@@ -1,113 +1,81 @@
-# app/main.py
-
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.concurrency import run_in_threadpool
 import asyncio
 from dotenv import load_dotenv
-import re
+import os, re
 from requests.exceptions import HTTPError
 
 from .metadata import list_all_services, load_metadata
 from .llm_router import plan_calls
 from .odata_client import query_odata
 
-# ─── Load environment variables ─────────────────────────────────────────────────
+# Load .env (for local dev)
 load_dotenv()
 
-# ─── Initialize FastAPI and metadata ─────────────────────────────────────────────
+# Initialize app and metadata
 app = FastAPI()
 services = list_all_services()
 metadata_registry = {srv: load_metadata(srv) for srv in services}
 
+# CORS: allow your front-end origin (set via env)
+frontend_origin = os.getenv("FRONTEND_ORIGIN")  # e.g. https://sap-odata-frontend.onrender.com
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[frontend_origin] if frontend_origin else ["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.post("/query")
 async def query_endpoint(body: dict):
-    # ─── Parse & validate inputs ─────────────────────────────────────────────────
     question = body.get("question", "")
     if not question:
-        raise HTTPException(status_code=400, detail="Missing 'question' in request body")
+        raise HTTPException(400, "Missing 'question'")
 
-    limit = body.get("limit")
+    # Parse paging
+    limit  = body.get("limit")
     offset = body.get("offset")
+    # ...validate as before...
 
-    # Validate limit
-    if limit is not None:
-        try:
-            limit = int(limit)
-            if limit < 1:
-                raise ValueError()
-        except ValueError:
-            raise HTTPException(status_code=400, detail="`limit` must be a positive integer")
-
-    # Validate offset
-    if offset is not None:
-        try:
-            offset = int(offset)
-            if offset < 0:
-                raise ValueError()
-        except ValueError:
-            raise HTTPException(status_code=400, detail="`offset` must be a non-negative integer")
-
-    # ─── 1) LLM Planning ───────────────────────────────────────────────────────────
+    # 1) Plan
     try:
         plan = plan_calls(question, metadata_registry)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"LLM planning failed: {e}")
+        raise HTTPException(400, f"LLM planning failed: {e}")
 
-    # ─── 2) Detect “first N” fallback if no explicit limit ─────────────────────────
+    # 2) Detect 'first N'
     top_n = None
     if limit is None:
-        m = re.search(r"\bfirst\s+(\d+)\b", question, re.IGNORECASE)
+        m = re.search(r"\bfirst\s+(\d+)\b", question, re.I)
         if m:
             top_n = int(m.group(1))
 
-    # ─── 3) Prepare concurrent OData calls ─────────────────────────────────────────
+    # 3) Concurrent OData calls
     tasks = []
     for call in plan:
-        service = call.get("service")
-        entity = call.get("entity")
+        svc, ent = call["service"], call["entity"]
         params = {}
+        if call.get("filter"): params["$filter"] = call["filter"]
+        if call.get("select"): params["$select"] = ",".join(call["select"])
+        if limit is not None: params["$top"] = limit
+        elif top_n:         params["$top"] = top_n
+        if offset is not None: params["$skip"] = offset
+        tasks.append(run_in_threadpool(query_odata, svc, ent, params))
 
-        if call.get("filter"):
-            params["$filter"] = call["filter"]
-        if call.get("select"):
-            params["$select"] = ",".join(call["select"])
-        # Paging logic
-        if limit is not None:
-            params["$top"] = limit
-        elif top_n:
-            params["$top"] = top_n
-        if offset is not None:
-            params["$skip"] = offset
-
-        # Schedule in threadpool
-        tasks.append(
-            run_in_threadpool(query_odata, service, entity, params)
-        )
-
-    # ─── 4) Execute tasks concurrently ─────────────────────────────────────────────
     try:
         datas = await asyncio.gather(*tasks)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"OData parallel calls failed: {e}")
+        raise HTTPException(400, f"OData calls failed: {e}")
 
-    # ─── 5) Pair calls with their results ─────────────────────────────────────────
-    results = [
-        {"call": plan[i], "data": datas[i]}
-        for i in range(len(plan))
-    ]
-
-    # ─── 6) Build pagination metadata ────────────────────────────────────────────
+    results = [{"call": plan[i], "data": datas[i]} for i in range(len(plan))]
+    # Build pagination
     pagination = {}
-    if limit is not None:
-        pagination["limit"] = limit
-    if offset is not None:
-        pagination["offset"] = offset
+    if limit is not None: pagination["limit"] = limit
+    if offset is not None: pagination["offset"] = offset
     if limit is not None and offset is not None:
         pagination["next_offset"] = offset + limit
 
-    # ─── Return final response ───────────────────────────────────────────────────
-    response = {"plan": plan, "results": results}
-    if pagination:
-        response["pagination"] = pagination
-    return response
+    resp = {"plan": plan, "results": results}
+    if pagination: resp["pagination"] = pagination
+    return resp
