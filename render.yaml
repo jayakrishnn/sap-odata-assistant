@@ -1,0 +1,35 @@
+# render.yaml
+
+services:
+  # ─── Backend: FastAPI app ────────────────────────────────────────────────
+  - type: web_service
+    name: sap-odata-backend
+    env:
+      # ← your SAP host defaults; change these if your SAP system differs
+      - key: SAP_HOST_IP
+        value: 52.172.30.210
+      - key: SAP_PORT
+        value: ":44300"
+      - key: SAP_HOSTNAME
+        value: bpts4hana01.bpterp.com
+      - key: SAP_CLIENT
+        value: "200"
+      # ← allow your front-end’s URL here; you’ll replace FRONTEND_URL after deploy
+      - key: CORS_ORIGINS
+        value: "https://sap-odata-assistant-frontend.onrender.com"
+    secret_env:
+      # ← mark these as "Secrets" in Render’s UI (they will not live in your repo)
+      - GEMINI_API_KEY
+      - SAP_USERNAME
+      - SAP_PASSWORD
+    build_command: pip install -r requirements.txt
+    start_command: uvicorn app.main:app --host 0.0.0.0 --port 10000 --workers 2
+
+  # ─── Frontend: React Static Site ─────────────────────────────────────────
+  - type: static_site
+    name: sap-odata-frontend
+    root_dir: frontend
+    build_command: |
+      npm install
+      npm run build
+    publish_dir: build   # ← if you used CRA; if Vite instead, write 'dist' here
