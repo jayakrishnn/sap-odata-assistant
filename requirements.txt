@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+google-genai
+requests
+python-dotenv
+lxml
+tenacity>=8.2.0
