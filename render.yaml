@@ -27,7 +27,7 @@ services:
 
   # ─── Frontend: React Static Site ─────────────────────────────────────────
   - type: static_site
-    name: sap-odata-frontend
+    name: sap-odata-assistant-frontend
     root_dir: frontend
     build_command: |
       npm install
